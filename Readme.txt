@@ -1,0 +1,1 @@
+Get Frame from the camera and create three level downsampling.
