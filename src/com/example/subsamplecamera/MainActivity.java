@@ -39,9 +39,9 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
 	private Bitmap mImageL1, mImageL2, mImageL3;
 
 	    
-	native private boolean compileKernels();
+	native private boolean compileKernels(int w,int h);
 	native private void runfilter(Bitmap L1,Bitmap L2,Bitmap L3, byte[] in, int width, int height);
-
+	native private int getSpeed();
 
     private void copyFile(final String f) {
 		InputStream in;
@@ -66,31 +66,14 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
-//		Log.i(TAG,"on create set contentviewOK");
 		setContentView(R.layout.activity_main);
 		
-//        Log.i(TAG,"oncreateOK");
-        copyFile("kernels.cl");
-//        Log.i(TAG,"oncreate1OK");
-        if( compileKernels() == false )
-            Log.i(TAG,"Kernel compilation failed");
-
-//        Log.i(TAG,"oncreate2ok");
-        
-//        Log.i(TAG,"oncreate1.1okok");
         mImageViewL1 = ((ImageView)findViewById(R.id.imageViewL1));
-//        Log.i(TAG,"oncreate1.2");
         mImageViewL2 = ((ImageView)findViewById(R.id.imageViewL2));
-//        Log.i(TAG,"oncreate1.3");
         mImageViewL3 = ((ImageView)findViewById(R.id.imageViewL3));
         mTextureView = (TextureView) findViewById(R.id.preview);
-
-        
-//        Log.i(TAG,"on create 2");
         
         mTextureView.setSurfaceTextureListener(this);
-
-//        Log.i(TAG,"on create 3");  	
 	}
 
 	@Override
@@ -115,7 +98,7 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
             // screen orientation handling.
             mCamera.setDisplayOrientation(0);
             
-            
+            Log.i("TAG","onSurfaceTextureAvailable : ");
             // Finds a suitable resolution.
             Size size = findBestResolution(pWidth, pHeight);
             PixelFormat pixelFormat = new PixelFormat();
@@ -125,24 +108,35 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
                             * pixelFormat.bitsPerPixel / 8;
             // Set-up camera size and video format. YCbCr_420_SP
             // should be the default on Android anyway.
+            Log.i("TAG","onSurfaceTextureAvailable1 : ");
             Camera.Parameters parameters = mCamera.getParameters();
             parameters.setPreviewSize(size.width, size.height);
+            Log.i("TAG","onSurfaceTextureAvailable2 : ");
+      
             parameters.setPreviewFormat(PixelFormat.YCbCr_420_SP);
+            Log.i("TAG","onSurfaceTextureAvailable2.5 : ");
             mCamera.setParameters(parameters);
 
-            
+            Log.i("TAG","onSurfaceTextureAvailable3 : ");
+            //Compile kernel
+            copyFile("kernels.cl");
+            if( compileKernels(size.width,size.height) == false )
+                Log.i(TAG,"Kernel compilation failed");
             // Prepares video buffer and bitmap buffers.
             mVideoSource = new byte[sourceSize];
+            Log.i("TAG","onSurfaceTextureAvailable4 : ");
             mImageL1 = Bitmap.createBitmap(size.width/2, size.height/2,
-                                          Bitmap.Config.ARGB_8888);
+                                          Bitmap.Config.ALPHA_8);
+            Log.i("TAG","onSurfaceTextureAvailable5 : ");
             mImageL2 = Bitmap.createBitmap(size.width/4, size.height/4,
-                                          Bitmap.Config.ARGB_8888);
+                                          Bitmap.Config.ALPHA_8);
             mImageL3 = Bitmap.createBitmap(size.width/8, size.height/8,
-                                          Bitmap.Config.ARGB_8888);
+                                          Bitmap.Config.ALPHA_8);
             mImageViewL1.setImageBitmap(mImageL1);
             mImageViewL2.setImageBitmap(mImageL2);
             mImageViewL3.setImageBitmap(mImageL3);
 
+            Log.i("TAG","onSurfaceTextureAvailable7 : ");
             // Starts receiving pictures from the camera.
             mCamera.addCallbackBuffer(mVideoSource);
             mCamera.startPreview();
@@ -173,7 +167,7 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
         if ((selectedSize.width == 0) || (selectedSize.height == 0)) {
             selectedSize = sizes.get(0);
         }
-        return sizes.get(0);//selectedSize;
+        return sizes.get(5);//selectedSize;
     }
 
     @Override
@@ -199,9 +193,11 @@ TextureView.SurfaceTextureListener, Camera.PreviewCallback {
         // New data has been received from camera. Processes it and
         // requests surface to be redrawn right after.
         if (mCamera != null) {
-            
-
+        	long starttime = System.currentTimeMillis();
         	runfilter(mImageL1,mImageL2,mImageL3, pData, mImageL1.getWidth()*2,mImageL1.getHeight()*2);
+            long millis = System.currentTimeMillis() - starttime;
+            Log.i("TAG","duration : "+millis);
+            
             mImageViewL1.invalidate();
             mImageViewL2.invalidate();
             mImageViewL3.invalidate();

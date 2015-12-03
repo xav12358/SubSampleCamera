@@ -15,12 +15,14 @@
 
 #include <jni.h>
 
-static cl::Context      gContext;
-static cl::CommandQueue gQueue;
-static cl::Kernel       gNV21Kernel;
-static cl::Kernel       gDownSamplerXKernel;
-static cl::Kernel       gDownSamplerYKernel;
-static cl::Image2D		pyrIm[3];
+cl::Context      gContext;
+cl::CommandQueue gQueue;
+cl::Kernel       gNV21Kernel;
+cl::Kernel       gDownSamplerXKernel;
+cl::Kernel       gDownSamplerYKernel;
+cl::Buffer 		*bufferIn;
+cl::Buffer 		*bufferOut;
+cl::Buffer 		*bufferOut2;
 
 const char* oclErrorString(cl_int error){
 	static const char* errorString[] = {
@@ -143,14 +145,26 @@ void cb(cl_program p,void* data)
 	clGetProgramInfo(p,CL_PROGRAM_DEVICES,sizeof(cl_device_id),(void*)devid,NULL);
 	char bug[65536];
 	clGetProgramBuildInfo(p,devid[0],CL_PROGRAM_BUILD_LOG,65536*sizeof(char),bug,NULL);
-	clReleaseProgram(p);
+//	clReleaseProgram(p);
 	LOGE("Build log \n %s\n",bug);
+
+	cl_build_status  status;
+	clGetProgramBuildInfo(p,devid[0],CL_PROGRAM_BUILD_STATUS , sizeof(cl_build_status) ,&status ,NULL);
+	LOGE("Build status \n %d\n",status );
+
+	char option[65536];
+	clGetProgramBuildInfo(p,devid[0],CL_PROGRAM_BUILD_OPTIONS , 65536*sizeof(char) ,&option ,NULL);
+	LOGE("Build option \n %s\n",option );
+
+	clReleaseProgram(p);
+
 }
 
 
 
 void process(uint32_t* outL1,uint32_t* outL2,uint32_t* outL3,  uint8_t* in, int w, int h)
 {
+	static int first = 1;
 	cl::size_t<3> src_origin;
 	cl::size_t<3> dst_origin;
 	cl::size_t<3> region;
@@ -164,17 +178,16 @@ void process(uint32_t* outL1,uint32_t* outL2,uint32_t* outL3,  uint8_t* in, int 
 	src_origin[1] = 0;
 	src_origin[2] = 0;
 
-
-	cl::Buffer bufferIn = cl::Buffer(gContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-			w*h*sizeof(cl_uchar4), in, NULL);
-	cl::Buffer bufferOut = cl::Buffer(gContext, CL_MEM_READ_WRITE, w*h*sizeof(cl_uchar4));
-	cl::Buffer bufferOut2= cl::Buffer(gContext, CL_MEM_READ_WRITE, w*h*sizeof(cl_uchar4));
-
+	int nbthreadx = 16;
+	int nbthready = 16;
 
 	try {
-
-		gNV21Kernel.setArg(0,bufferOut);
-		gNV21Kernel.setArg(1,bufferIn);
+		//LOGI("@process \n");
+		gQueue.enqueueWriteBuffer( *bufferIn,CL_TRUE,0,w*h*sizeof(cl_uchar4),in);
+		////////////////////////////////////
+		// Conversion YUV to gray
+		gNV21Kernel.setArg(0,*bufferOut);
+		gNV21Kernel.setArg(1,*bufferIn);
 		gNV21Kernel.setArg(2,w);
 		gNV21Kernel.setArg(3,h);
 		gQueue.enqueueNDRangeKernel(gNV21Kernel,
@@ -184,31 +197,36 @@ void process(uint32_t* outL1,uint32_t* outL2,uint32_t* outL3,  uint8_t* in, int 
 				NULL,
 				NULL);
 
+		//LOGI("@process1 \n");
+		/////////////////////////////////
+//		 Level 1
 
-		// Level 1
-		gDownSamplerXKernel.setArg(0,bufferOut);
-		gDownSamplerXKernel.setArg(1,bufferOut2);
+		gDownSamplerXKernel.setArg(0,*bufferOut);
+		gDownSamplerXKernel.setArg(1,*bufferOut2);
 		gDownSamplerXKernel.setArg(2,w);
 		gDownSamplerXKernel.setArg(3,h);
 		gQueue.enqueueNDRangeKernel(gDownSamplerXKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/16.0f)*16,(int)ceil((float)h/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/nbthreadx)*nbthreadx,(int)ceil((float)h/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
 
-		gDownSamplerYKernel.setArg(0,bufferOut2);
-		gDownSamplerYKernel.setArg(1,bufferOut);
+		//LOGI("@process2 \n");
+		gDownSamplerYKernel.setArg(0,*bufferOut2);
+		gDownSamplerYKernel.setArg(1,*bufferOut);
 		gDownSamplerYKernel.setArg(2,w/2);
 		gDownSamplerYKernel.setArg(3,h/2);
 		gQueue.enqueueNDRangeKernel(gDownSamplerYKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/2/16.0f)*16,(int)ceil((float)h/2/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/2/nbthreadx)*nbthreadx,(int)ceil((float)h/2/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
 
-		gQueue.enqueueReadBuffer( bufferOut,CL_TRUE,0,(w)/2*h/2*sizeof(cl_uchar4),outL1);
+		//LOGI("@process3 \n");
+		//gQueue.enqueueReadBuffer( *bufferOut,CL_TRUE,0,w/2*h/2*sizeof(cl_uchar),outL1);
+		//LOGI("@process4 \n");
 
 	}
 	catch (cl::Error e) {
@@ -216,102 +234,70 @@ void process(uint32_t* outL1,uint32_t* outL2,uint32_t* outL3,  uint8_t* in, int 
 	}
 
 	try{
+		/////////////////////////////////////////////
 		// Level 2
-		gDownSamplerXKernel.setArg(0,bufferOut);
-		gDownSamplerXKernel.setArg(1,bufferOut2);
+		gDownSamplerXKernel.setArg(0,*bufferOut);
+		gDownSamplerXKernel.setArg(1,*bufferOut2);
 		gDownSamplerXKernel.setArg(2,w/2);
 		gDownSamplerXKernel.setArg(3,h/2);
 		gQueue.enqueueNDRangeKernel(gDownSamplerXKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/2/16.0f)*16,(int)ceil((float)h/2/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/2/nbthreadx)*nbthreadx,(int)ceil((float)h/2/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
 
-		gDownSamplerYKernel.setArg(0,bufferOut2);
-		gDownSamplerYKernel.setArg(1,bufferOut);
+		gDownSamplerYKernel.setArg(0,*bufferOut2);
+		gDownSamplerYKernel.setArg(1,*bufferOut);
 		gDownSamplerYKernel.setArg(2,w/2);
 		gDownSamplerYKernel.setArg(3,h/2);
 		gQueue.enqueueNDRangeKernel(gDownSamplerYKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/2/16.0f)*16,(int)ceil((float)h/2/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/2/nbthreadx)*nbthreadx,(int)ceil((float)h/2/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
-		gQueue.enqueueReadBuffer( bufferOut ,CL_TRUE, 0, w/4*h/4*sizeof(cl_uchar4),outL2);
+		//gQueue.enqueueReadBuffer( *bufferOut ,CL_TRUE, 0, w/4*h/4*sizeof(cl_uchar),outL2);
 	}
 	catch (cl::Error e) {
-		LOGI("@oclDecoder2: %s %d \n",e.what(),e.err());
+		LOGI("Level 2: %s %d \n",e.what(),e.err());
 	}
 
 
 
 
 	try{
-
+		/////////////////////////////////////
 		// Level 3
-		gDownSamplerXKernel.setArg(0,bufferOut);
-		gDownSamplerXKernel.setArg(1,bufferOut2);
+		gDownSamplerXKernel.setArg(0,*bufferOut);
+		gDownSamplerXKernel.setArg(1,*bufferOut2);
 		gDownSamplerXKernel.setArg(2,w/4);
 		gDownSamplerXKernel.setArg(3,h/4);
 		gQueue.enqueueNDRangeKernel(gDownSamplerXKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/4/16.0f)*16,(int)ceil((float)h/4/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/4/nbthreadx)*nbthreadx,(int)ceil((float)h/4/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
 
-		gDownSamplerYKernel.setArg(0,bufferOut2);
-		gDownSamplerYKernel.setArg(1,bufferOut);
+		gDownSamplerYKernel.setArg(0,*bufferOut2);
+		gDownSamplerYKernel.setArg(1,*bufferOut);
 		gDownSamplerYKernel.setArg(2,w/4);
 		gDownSamplerYKernel.setArg(3,h/4);
 		gQueue.enqueueNDRangeKernel(gDownSamplerYKernel,
 				cl::NullRange,
-				cl::NDRange( (int)ceil((float)w/4/16.0f)*16,(int)ceil((float)h/4/16.0f)*16),
-				cl::NDRange(16,16),
+				cl::NDRange( (int)ceil((float)w/4/nbthreadx)*nbthreadx,(int)ceil((float)h/4/nbthready)*nbthready),
+				cl::NDRange(nbthreadx,nbthready),
 				NULL,
 				NULL);
 
-		gQueue.enqueueReadBuffer( bufferOut ,CL_TRUE, 0, w/8*h/8*sizeof(cl_uchar4),outL3);
+		//gQueue.enqueueReadBuffer( *bufferOut ,CL_TRUE, 0, w/8*h/8*sizeof(cl_uchar),outL3);
 
 	}
 	catch (cl::Error e) {
-		LOGI("@oclDecoder3: %s %d \n",e.what(),e.err());
+		LOGI("Level 3: %s %d \n",e.what(),e.err());
 	}
 
-}
-
-
-static JNINativeMethod gMethodRegistryLiveFeatureActivity[] = {
-		{ "compileKernels", "()Z", (void *) compileKernels }
-};
-
-static JNINativeMethod gMethodRegistryCameraPreview[] = {
-		{ "runfilter", "(Landroid/graphics/Bitmap;Landroid/graphics/Bitmap;Landroid/graphics/Bitmap;[BII)V", (void *) runfilter },
-};
-//static int gMethodRegistrySize = sizeof(gMethodRegistry)
-//                               / sizeof(gMethodRegistry[0]);
-
-JNIEXPORT jint JNI_OnLoad(JavaVM* pVM, void* reserved) {
-	JNIEnv *env;
-
-	LOGW("JNI_OnLoad\n");
-	if ((pVM->GetEnv((void **)(&env), JNI_VERSION_1_6)) != JNI_OK)
-	{ //abort();
-	}
-
-	LOGW("JNI_OnLoad\n");
-	jclass LiveFeatureActivity = env->FindClass("com/example/subsamplecamera/MainActivity");
-	if (LiveFeatureActivity == NULL) abort();
-	env->RegisterNatives( LiveFeatureActivity,gMethodRegistryLiveFeatureActivity, 1);
-	env->DeleteLocalRef( LiveFeatureActivity);
-	LOGW("JNI_OnLoad\n");
-	jclass CameraPreview = env->FindClass("com/example/subsamplecamera/MainActivity");
-	if (CameraPreview == NULL) abort();
-	env->RegisterNatives( CameraPreview,gMethodRegistryCameraPreview, 1);
-	env->DeleteLocalRef( CameraPreview);
-	LOGW("JNI_OnLoad\n");
-	return JNI_VERSION_1_6;
 }
 
 
@@ -332,21 +318,10 @@ JNIEXPORT void JNICALL runfilter(
 	AndroidBitmapInfo bmpInfoL2;
 	AndroidBitmapInfo bmpInfoL3;
 
-	//	LOGW("runfilter 0\n");
 	cl::ImageFormat image_format;
 	image_format.image_channel_data_type	= CL_UNSIGNED_INT8;
 	image_format.image_channel_order 		= CL_RGBA;
 
-	//	LOGW("runfilter 1\n");
-	//	if(singleton == 0)
-	//	{
-	//		int level = 1;
-	//		for(int i=0;i<3;i++)
-	//		{
-	//			level *=2;
-	//			pyrIm[i] =  cl::Image2D( gContext, CL_MEM_READ_WRITE, image_format, width/level, height/level );
-	//		}
-	//	}
 
 	if (AndroidBitmap_getInfo(env, L1Bmp, &bmpInfoL1) < 0) {
 		throwJavaException(env,"gaussianBlur","Error retrieving bitmap meta data");
@@ -362,22 +337,21 @@ JNIEXPORT void JNICALL runfilter(
 		throwJavaException(env,"gaussianBlur","Error retrieving bitmap meta data");
 		return;
 	}
-	//	LOGW("runfilter 2\n");
 
-	if (bmpInfoL1.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
-		return;
-	}
-	//	LOGW("runfilter 3\n");
-	if (bmpInfoL2.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
-		return;
-	}
-	//	LOGW("runfilter 4\n");
-	if (bmpInfoL3.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
-		return;
-	}
+//	if (bmpInfoL1.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+//		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
+//		return;
+//	}
+//
+//	if (bmpInfoL2.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+//		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
+//		return;
+//	}
+//
+//	if (bmpInfoL3.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+//		throwJavaException(env,"gaussianBlur","Expecting RGBA_8888 format");
+//		return;
+//	}
 
 
 	uint32_t* bmpContentL1;
@@ -404,10 +378,6 @@ JNIEXPORT void JNICALL runfilter(
 		return;
 	}
 
-
-	//	LOGW("process avant\n");
-	// call helper for processing frame
-	//LOGW("runfilter %d %d \n",bmpInfoL1.width,bmpInfoL1.height);
 	LOGW("runfilter %d %d \n",width,height);
 	process(bmpContentL1,bmpContentL2,bmpContentL3,(uint8_t*)inPtr,width,height);
 
@@ -420,58 +390,94 @@ JNIEXPORT void JNICALL runfilter(
 
 
 
-JNIEXPORT jboolean JNICALL compileKernels(JNIEnv *env, jclass clazz)
+JNIEXPORT jboolean JNICALL compileKernels(JNIEnv *env, jclass clazz,int w, int h)
 {
 	// Find OCL devices and compile kernels
+
 	cl_int err = CL_SUCCESS;
-	//		LOGW("compileKernels\n");
+
+	std::vector<cl::Platform> platforms;
+	cl::Platform::get(&platforms);
+	if (platforms.size() == 0) {
+		return false;
+	}
+
+	cl_context_properties properties[] =	{ CL_CONTEXT_PLATFORM, (cl_context_properties)(platforms[0])(), 0};
+	gContext = cl::Context(CL_DEVICE_TYPE_GPU, properties);
+	std::vector<cl::Device> devices = gContext.getInfo<CL_CONTEXT_DEVICES>();
+	gQueue = cl::CommandQueue(gContext, devices[1], 0, &err);
+
+	LOGI("@compileKernels \n");
+	int src_length = 0;
+	const char* src  = file_contents("/data/data/com.example.subsamplecamera/app_execdir/kernels.cl",&src_length);
+	cl::Program::Sources sources(1,std::make_pair(src, src_length+1));
+	cl::Program *program;
+
 
 	try {
-		std::vector<cl::Platform> platforms;
-		cl::Platform::get(&platforms);
-		if (platforms.size() == 0) {
-			return false;
-		}
 
-		//			LOGW("compileKernelsIN1\n");
 
-		cl_context_properties properties[] =
-		{ CL_CONTEXT_PLATFORM, (cl_context_properties)(platforms[0])(), 0};
-		gContext = cl::Context(CL_DEVICE_TYPE_GPU, properties);
-		std::vector<cl::Device> devices = gContext.getInfo<CL_CONTEXT_DEVICES>();
-		gQueue = cl::CommandQueue(gContext, devices[0], 0, &err);
 
-		//			LOGW("compileKernelsIN2 %s \n",oclErrorString(err));
+		program = new cl::Program(gContext, sources,&err);
+		LOGI("@compileKernels1.5 \n");
+		program->build(devices,NULL,cb);
+		while(program->getBuildInfo<CL_PROGRAM_BUILD_STATUS>(devices[1]) != CL_BUILD_SUCCESS);
+		gNV21Kernel 		= cl::Kernel(*program, "nv21togray", &err);
+		gDownSamplerXKernel = cl::Kernel(*program, "downfilter_x_g", &err);
+		gDownSamplerYKernel = cl::Kernel(*program, "downfilter_y_g", &err);
 
-		int src_length = 0;
-		const char* src  = file_contents("/data/data/com.example.subsamplecamera/app_execdir/kernels.cl",&src_length);
-		//			LOGW("compileKernelsIN2.1 length %d \n",src_length);
-		cl::Program::Sources sources(1,std::make_pair(src, src_length+1));
-		//			LOGW("compileKernelsIN2.2 err %s \n",oclErrorString(err));
-
-		cl::Program program(gContext, sources,&err);
-		//			LOGW("compileKernelsIN2.3 err %s \n",oclErrorString(err));
-		program.build(devices);
-
-		//			LOGW("compileKernelsIN2.31 err %s \n", program.getBuildInfo<CL_PROGRAM_BUILD_STATUS>(devices[0]));
-
-		//			LOGW("compileKernelsIN2.4\n");
-		while(program.getBuildInfo<CL_PROGRAM_BUILD_STATUS>(devices[0]) != CL_BUILD_SUCCESS);
-
-		//			LOGW("compileKernelsIN2.5\n");
-
-		gNV21Kernel 		= cl::Kernel(program, "nv21togray", &err);
-		//			LOGW("compileKernels2.6 %s \n",oclErrorString(err));
-		gDownSamplerXKernel = cl::Kernel(program, "downfilter_x_g", &err);
-		//			LOGW("compileKernels2.7 %s \n",oclErrorString(err));
-		gDownSamplerYKernel = cl::Kernel(program, "downfilter_y_g", &err);
-		//			LOGW("compileKernels2.8 %s \n",oclErrorString(err));
+		bufferOut 	= new cl::Buffer(gContext, CL_MEM_READ_WRITE, w*h*sizeof(cl_uchar4));
+		bufferOut2	= new cl::Buffer(gContext, CL_MEM_READ_WRITE, w*h*sizeof(cl_uchar4));
+		bufferIn 	= new cl::Buffer(gContext, CL_MEM_READ_WRITE ,w*h*sizeof(cl_uchar4));
 
 		return true;
 	}
 	catch (cl::Error e) {
+
+		LOGI("@decode1 Build Status:: %s \n",program->getBuildInfo<CL_PROGRAM_BUILD_STATUS>(devices[0]));
+//		LOGI("@decode2:Build Options: %s \n", program->getBuildInfo<CL_PROGRAM_BUILD_OPTIONS>(devices[0]));
+//		LOGI("@decode3:Build Log:: %s \n",program->getBuildInfo<CL_PROGRAM_BUILD_LOG>(devices[0]));
+
 		if( !throwJavaException(env,"decode",e.what(),e.err()) )
-			LOGI("@decode: %s \n",e.what());
-		return false;
+		{
+
+//			LOGI("@decode0: %s \n",e.what());
+//			LOGI("@decode1 Build Status:: %s \n",program->getBuildInfo<CL_PROGRAM_BUILD_STATUS>(devices[0]));
+//			LOGI("@decode2:Build Options: %s \n", program->getBuildInfo<CL_PROGRAM_BUILD_OPTIONS>(devices[0]));
+//			LOGI("@decode3:Build Log:: %s \n",program->getBuildInfo<CL_PROGRAM_BUILD_LOG>(devices[0]));
+
+			return false;
+		}
 	}
 }
+
+JNIEXPORT jint JNICALL getSpeed(JNIEnv *env, jclass clazz)
+{
+	return 0;
+}
+
+
+static JNINativeMethod gMethodRegistryLiveFeatureActivity[] = {
+		{ "compileKernels", "(II)Z", (void *) compileKernels },
+		{ "runfilter", "(Landroid/graphics/Bitmap;Landroid/graphics/Bitmap;Landroid/graphics/Bitmap;[BII)V", (void *) runfilter },
+		{ "getSpeed", "()I", (void *) getSpeed }
+};
+
+
+JNIEXPORT jint JNI_OnLoad(JavaVM* pVM, void* reserved) {
+	JNIEnv *env;
+
+	LOGW("JNI_OnLoad\n");
+	if ((pVM->GetEnv((void **)(&env), JNI_VERSION_1_6)) != JNI_OK)
+	{ //abort();
+	}
+
+	LOGW("JNI_OnLoad\n");
+	jclass LiveFeatureActivity = env->FindClass("com/example/subsamplecamera/MainActivity");
+	if (LiveFeatureActivity == NULL) abort();
+	env->RegisterNatives( LiveFeatureActivity,gMethodRegistryLiveFeatureActivity, 3);
+	env->DeleteLocalRef( LiveFeatureActivity);
+
+	return JNI_VERSION_1_6;
+}
+

@@ -3,24 +3,19 @@
 #define DSHRD_LEN   (BLK_SIZE/2)
 #define DSHRD_SIZE  (2*DSHRD_LEN*DSHRD_LEN)
 
-uchar4 convertYVUtoRGBA(int y, int u, int v)
+uchar convertYVUtoRGBA(int y, int u, int v)
 {
     uchar4 ret;
     y-=16;
     u-=128;
     v-=128;
-    int b = y + (int)(1.772f*u);
-    int g = y - (int)(0.344f*u + 0.714f*v);
-    int r = y + (int)(1.402f*v);
-    int val = ((r+g+b)/3)>255?255:(r+g+b)/3;
-    ret.x = val;
-    ret.y = val;
-    ret.z = val;
-    ret.w = 255;
-    return ret;
+
+    int val = 0;(0.403936*u+0.838316*v+y)/3;
+
+    return val;
 }
 
-__kernel void nv21togray( __global uchar4* out,
+__kernel void nv21togray( __global uchar* out,
                           __global uchar*  in,
                           int    im_width,
                           int    im_height)
@@ -61,52 +56,51 @@ __kernel void nv21togray( __global uchar4* out,
 
 
 __kernel void downfilter_x_g( 
-    __global uchar4 *src,
-    __global uchar4 *dst, int w, int h )
+    __global uchar *src,
+    __global uchar *dst, int w, int h )
 {
-
 
     const int ix = get_global_id(0);
     const int iy = get_global_id(1);
 
     
-    float x0 = src[ix-2+(iy)*w].x/16.0;
-    float x1 = src[ix-1+(iy)*w].x/8.0;
-    float x2 = 3*src[ix+(iy)*w].x/4.0;
-    float x3 = src[ix+1+(iy)*w].x/8.0;
-    float x4 = src[ix+2+(iy)*w].x/16.0;
+    float x0 = src[ix-2+(iy)*w]/16.0;
+    float x1 = src[ix-1+(iy)*w]/8.0;
+    float x2 = 3*src[ix+(iy)*w]/4.0;
+    float x3 = src[ix+1+(iy)*w]/8.0;
+    float x4 = src[ix+2+(iy)*w]/16.0;
     
 
     int output = round( x0 + x1 + x2 + x3 + x4 );
 	if(output >255)
 		output = 255;
     if( ix < w && iy < h ) {
-        dst[iy*w + ix ] = (uchar4)(output,output,output,255);  // uncoalesced when writing to memory object
+        dst[iy*w + ix ] = output;
     }
 }
 
 
 
 __kernel void downfilter_y_g(
-    __global uchar4* src,
-    __global uchar4 *dst, int w, int h )
+    __global uchar* src,
+    __global uchar *dst, int w, int h )
 {
 
     const int ix = get_global_id(0);
     const int iy = get_global_id(1);
 
-    float x0 = src[2*ix+(2*iy-2)*w*2].x/16.0;
-    float x1 = src[2*ix+(2*iy-1)*w*2].x/8.0;
-    float x2 = 3*src[2*ix+(2*iy)*w*2].x/4.0;
-    float x3 = src[2*ix+(2*iy+1)*w*2].x/8.0;
-    float x4 = src[2*ix+(2*iy+2)*w*2].x/16.0;
+    float x0 = src[2*ix+(2*iy-2)*w*2]/16.0;
+    float x1 = src[2*ix+(2*iy-1)*w*2]/8.0;
+    float x2 = 3*src[2*ix+(2*iy)*w*2]/4.0;
+    float x3 = src[2*ix+(2*iy+1)*w*2]/8.0;
+    float x4 = src[2*ix+(2*iy+2)*w*2]/16.0;
     
     int output = round(x0 + x1 + x2 + x3 + x4);
 
 	if(output >255)
 		output = 255;
-    if( ix < w-2 && iy < h-2 ) {
-        dst[iy*w + ix ] = (uchar4)(output,output,output,255);
+    if( ix < w && iy < h ) {
+        dst[iy*w + ix ] = output;
     }
  
 }

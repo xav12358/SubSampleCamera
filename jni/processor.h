@@ -13,9 +13,8 @@
 extern "C" {
 #endif
 
-
-JNIEXPORT jboolean JNICALL compileKernels(JNIEnv *env, jclass clazz);
-
+JNIEXPORT jint JNICALL getSpeed(JNIEnv *env, jclass clazz);
+JNIEXPORT jboolean JNICALL compileKernels(JNIEnv *env, jclass clazz, int w,int h);
 JNIEXPORT void JNICALL runfilter(
 		JNIEnv *env,
 		jclass clazz,
